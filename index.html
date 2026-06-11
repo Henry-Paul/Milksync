@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>MilkSync — Customer Portal</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com">
+    </script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest">
+    </script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js">
+    </script>
+
+    <style>
+        .pb-safe {
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+        .pt-safe {
+            padding-top: env(safe-area-inset-top, 0px);
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(5px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        .spinner {
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 4px;
+        }
+        .calendar-day {
+            aspect-ratio: 1/1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-size: 0.75rem;
+            font-weight: 600;
+            transition: all 0.15s;
+        }
+        .rating-stars {
+            display: flex;
+            gap: 4px;
+        }
+        .rating-stars button {
+            font-size: 1.5rem;
+            transition: transform 0.15s;
+        }
+        .rating-stars button:hover {
+            transform: scale(1.2);
+        }
+        .badge-area {
+            display: inline-block;
+            background: #eef2ff;
+            color: #4338ca;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 0.15rem 0.6rem;
+            border-radius: 9999px;
+            letter-spacing: 0.025em;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans antialiased overflow-x-hidden pt-safe">
+
+    <div id="app" class="w-full min-h-screen relative pb-safe"></div>
+
+    <script>
+        // ============================================================
+        // 1.  SHEETBEST CONFIGURATION — EDIT THESE VALUES
+        // ============================================================
+        const SHEETBEST_API_KEY = 'YOUR_SHEETBEST_API_KEY'; // ← Replace
+        const SHEETBEST_SHEET_ID = 'YOUR_SHEETBEST_SHEET_ID'; // ← Replace
+        const SHEETBEST_BASE = `https://sheetbest.com/api/sheets/${SHEETBEST_SHEET_ID}`;
+
+        // ============================================================
+        // 2.  PRICES & CONSTANTS
+        // ============================================================
+        const PRICES = { milk: 55, curd: 30, ghee: 550 };
+        const ADMIN_PHONE = '919876543210';
+        const BUSINESS_NAME = 'MilkSync Dairy';
+        const BUSINESS_TAGLINE = 'Fresh Milk & Dairy Products Delivered Daily';
+        const BUSINESS_ADDRESS = '12, Shivaji Colony, Sanath Nagar, Hyderabad - 500018';
+        const BUSINESS_PHONE = '919876543210';
+        const BUSINESS_EMAIL = 'info@milksync.in';
+
+        // ============================================================
+        // 3.  STATE
+        // ============================================================
+        let state = {
+            view: 'login', // 'login' | 'landing' | 'dashboard'
+            customerTab: 'overview', // 'overview' | 'calendar' | 'analytics' | 'payments'
+            currentUser: null, // customer object
+            customers: [],
+            deliveries: [],
+            holidays: [],
+            noDeliveryRequests: [],
+            notifications: [],
+            ratings: [],
+            isSyncing: false,
+            selectedDate: null,
+            showRatingModal: false,
+            ratingDeliveryId: null,
+            pendingRating: null
+        };
+
+        // ============================================================
+        // 4.  UTILITY
+        // ============================================================
+        const getLocalDateString = (dateObj = new Date()) => {
+            const offset = dateObj.getTimezoneOffset() * 60000;
+            return (new Date(dateObj - offset)).toISOString().split('T')[0];
+        };
+        const todayStr = getLocalDateString();
+        const generateId = () => 'id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        const formatDate = (dateStr) => {
+            const d = new Date(dateStr + 'T00:00:00');
+            return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+        };
+        const formatCurrency = (num) => '₹' + Number(num).toLocaleString('en-IN');
+
+        // ============================================================
+        // 5.  SHEETBEST API
+        // ============================================================
+        async function sheetBestFetch(method = 'GET', data = null) {
+            const options = {
+                method,
+                headers: { 'Content-Type': 'application/json', 'x-api-key': SHEETBEST_API_KEY }
+            };
+            if (data) options.body = JSON.stringify(data);
+            try {
+                const res = await fetch(SHEETBEST_BASE, options);
+                if (!res.ok) throw new Error(`SheetBest ${res.status}`);
+                return await res.json();
+            } catch (err) {
+                console.warn('[SheetBest]', err.message);
+                return null;
+            }
+        }
+
+        async function loadDataFromSheetBest() {
+            const raw = await sheetBestFetch('GET');
+            if (!raw || !raw.data) return false;
+            const d = raw.data;
+            state.customers = d.customers || [];
+            state.deliveries = d.deliveries || [];
+            state.holidays = d.holidays || [];
+            state.noDeliveryRequests = d.noDeliveryRequests || [];
+            state.notifications = d.notifications || [];
+            state.ratings = d.ratings || [];
+            return true;
+        }
+
+        async function saveDataToSheetBest() {
+            const payload = {
+                customers: state.customers,
+                deliveries: state.deliveries,
+                holidays: state.holidays,
+                noDeliveryRequests: state.noDeliveryRequests,
+                notifications: state.notifications,
+                ratings: state.ratings
+            };
+            state.isSyncing = true;
+            renderApp();
+            const ok = await sheetBestFetch('POST', payload);
+            state.isSyncing = false;
+            renderApp();
+            return !!ok;
+        }
+
+        function fallbackSave() {
+            try {
+                localStorage.setItem('milkSync_customers', JSON.stringify(state.customers));
+                localStorage.setItem('milkSync_deliveries', JSON.stringify(state.deliveries));
+                localStorage.setItem('milkSync_holidays', JSON.stringify(state.holidays));
+                localStorage.setItem('milkSync_noDeliveryRequests', JSON.stringify(state.noDeliveryRequests));
+                localStorage.setItem('milkSync_notifications', JSON.stringify(state.notifications));
+                localStorage.setItem('milkSync_ratings', JSON.stringify(state.ratings));
+            } catch (_) {}
+        }
+
+        function fallbackLoad() {
+            try {
+                const c = localStorage.getItem('milkSync_customers');
+                const d = localStorage.getItem('milkSync_deliveries');
+                const h = localStorage.getItem('milkSync_holidays');
+                const n = localStorage.getItem('milkSync_noDeliveryRequests');
+                const notif = localStorage.getItem('milkSync_notifications');
+                const r = localStorage.getItem('milkSync_ratings');
+                if (c) state.customers = JSON.parse(c);
+                if (d) state.deliveries = JSON.parse(d);
+                if (h) state.holidays = JSON.parse(h);
+                if (n) state.noDeliveryRequests = JSON.parse(n);
+                if (notif) state.notifications = JSON.parse(notif);
+                if (r) state.ratings = JSON.parse(r);
+                return !!(c && d);
+            } catch (_) { return false; }
+        }
+
+        async function saveData() {
+            const ok = await saveDataToSheetBest();
+            if (!ok) fallbackSave();
+            if (!ok) renderApp();
+        }
+
+        async function initData() {
+            const loaded = await loadDataFromSheetBest();
+            if (!loaded) {
+                const fallbackOk = fallbackLoad();
+                if (!fallbackOk || state.customers.length === 0) seedInitialData();
+            }
+            if (!state.holidays) state.holidays = [];
+            if (!state.noDeliveryRequests) state.noDeliveryRequests = [];
+            if (!state.notifications) state.notifications = [];
+            if (!state.ratings) state.ratings = [];
+            state.deliveries = state.deliveries.map(d => {
+                if (!d.items) d.items = { milk: 0, curd: 0, ghee: 0 };
+                if (!d.rating) d.rating = null;
+                return d;
+            });
+            renderApp();
+        }
+
+        // ============================================================
+        // 6.  SEED DATA
+        // ============================================================
+        function seedInitialData() {
+            const INITIAL_CUSTOMERS = [
+                { id: 'c1', name: 'Ravi Kumar', phone: '919876543210', address: 'Flat 101, Oakwood Apts', locality: 'Shivaji Colony',
+                    area: 'Sanath Nagar', mapsLink: 'https://maps.google.com', plan: { milk: 2, curd: 1, ghee: 0 },
+                    frequency: 'monthly', balance: 1250, avgRating: 0, totalRatings: 0 },
+                { id: 'c2', name: 'Priya Sharma', phone: '919876543211', address: 'Villa 4, Sunrise Layout', locality: 'Bhagya Nagar',
+                    area: 'Sanath Nagar', mapsLink: 'https://maps.google.com', plan: { milk: 1, curd: 0, ghee: 0 },
+                    frequency: '15-days', balance: 450, avgRating: 0, totalRatings: 0 },
+                { id: 'c3', name: 'Amit Singh', phone: '919876543212', address: 'House No 12, Main St', locality: 'Shivaji Colony',
+                    area: 'Sanath Nagar', mapsLink: 'https://maps.google.com', plan: { milk: 3, curd: 2, ghee: 1 },
+                    frequency: 'monthly', balance: 0, avgRating: 0, totalRatings: 0 },
+            ];
+            state.customers = INITIAL_CUSTOMERS;
+            state.deliveries = generateHistoricalData(INITIAL_CUSTOMERS);
+            state.holidays = [];
+            state.noDeliveryRequests = [];
+            state.notifications = [];
+            state.ratings = [];
+            fallbackSave();
+        }
+
+        function generateHistoricalData(customers) {
+            let data = [];
+            const now = new Date();
+            for (let i = 400; i >= 0; i--) {
+                const dateObj = new Date(now);
+                dateObj.setDate(now.getDate() - i);
+                const dStr = getLocalDateString(dateObj);
+                customers.forEach(c => {
+                    const status = Math.random() > 0.1 ? 'delivered' : 'skipped';
+                    const items = {
+                        milk: c.plan.milk,
+                        curd: (Math.random() > 0.5 ? c.plan.curd : 0),
+                        ghee: (Math.random() > 0.95 ? 1 : 0)
+                    };
+                    const rating = status === 'delivered' && Math.random() > 0.6 ? Math.floor(Math.random() * 5) + 1 :
+                        null;
+                    data.push({
+                        id: `seed_${dStr}_${c.id}`,
+                        customerId: c.id,
+                        date: dStr,
+                        status: status,
+                        items: items,
+                        rating: rating,
+                        ratingComment: rating ? 'Good quality' : null
+                    });
+                });
+            }
+            return data;
+        }
+
+        // ============================================================
+        // 7.  ANALYTICS ENGINE (Customer)
+        // ============================================================
+        function calculateRevenue(deliveriesArray) {
+            return deliveriesArray
+                .filter(d => d.status === 'delivered')
+                .reduce((sum, d) => sum + (d.items.milk * PRICES.milk) + (d.items.curd * PRICES.curd) + (d.items.ghee *
+                    PRICES.ghee), 0);
+        }
+
+        function getCustomerAnalytics(customerId) {
+            const cDels = state.deliveries.filter(d => d.customerId === customerId);
+            const now = new Date();
+
+            const getDel = (daysAgoStart, daysAgoEnd) => {
+                return cDels.filter(d => {
+                    const dDate = new Date(d.date);
+                    const start = new Date(now);
+                    start.setDate(now.getDate() - daysAgoStart);
+                    const end = new Date(now);
+                    end.setDate(now.getDate() - daysAgoEnd);
+                    return dDate >= start && dDate <= end;
+                });
+            };
+
+            const revToday = calculateRevenue(getDel(0, 0));
+            const revYesterday = calculateRevenue(getDel(1, 1));
+            const dod = revYesterday ? ((revToday - revYesterday) / revYesterday) * 100 : 0;
+
+            const revThisWeek = calculateRevenue(getDel(6, 0));
+            const revLastWeek = calculateRevenue(getDel(13, 7));
+            const wow = revLastWeek ? ((revThisWeek - revLastWeek) / revLastWeek) * 100 : 0;
+
+            const revThisMonth = calculateRevenue(getDel(29, 0));
+            const revLastMonth = calculateRevenue(getDel(59, 30));
+            const mom = revLastMonth ? ((revThisMonth - revLastMonth) / revLastMonth) * 100 : 0;
+
+            const revThisYear = calculateRevenue(getDel(364, 0));
+            const revLastYear = calculateRevenue(getDel(729, 365));
+            const yoy = revLastYear ? ((revThisYear - revLastYear) / revLastYear) * 100 : 0;
+
+            return {
+                today: revToday,
+                dod: { val: revToday - revYesterday, pct: dod.toFixed(1) },
+                wow: { val: revThisWeek, prev: revLastWeek, pct: wow.toFixed(1) },
+                mom: { val: revThisMonth, prev: revLastMonth, pct: mom.toFixed(1) },
+                yoy: { val: revThisYear, prev: revLastYear, pct: yoy.toFixed(1) },
+                totalDeliveries: cDels.filter(d => d.status === 'delivered').length,
+                totalSkips: cDels.filter(d => d.status !== 'delivered').length,
+            };
+        }
+
+        // ============================================================
+        // 8.  NOTIFICATION ENGINE
+        // ============================================================
+        function addNotification(customerId, type, message, data = {}) {
+            state.notifications.push({
+                id: generateId(),
+                customerId: customerId,
+                type: type,
+                message: message,
+                data: data,
+                read: false,
+                createdAt: new Date().toISOString()
+            });
+        }
+
+        function getUnreadCount(customerId = null) {
+            if (customerId) {
+                return state.notifications.filter(n => n.customerId === customerId && !n.read).length;
+            }
+            return state.notifications.filter(n => !n.read).length;
+        }
+
+        function markNotificationRead(id) {
+            const idx = state.notifications.findIndex(n => n.id === id);
+            if (idx >= 0) { state.notifications[idx].read = true;
+                saveData(); }
+        }
+
+        // ============================================================
+        // 9.  RENDER ENGINE
+        // ============================================================
+        let customerChartInstance = null;
+
+        function renderApp() {
+            const app = document.getElementById('app');
+            let html = '';
+
+            if (state.view === 'login') html = renderLogin();
+            else if (state.view === 'landing') html = renderLanding();
+            else if (state.view === 'dashboard') html = renderDashboard();
+
+            app.innerHTML = html;
+            lucide.createIcons();
+
+            setTimeout(() => {
+                if (state.view === 'dashboard' && state.customerTab === 'analytics') renderCustomerChart();
+            }, 50);
+
+            if (state.showRatingModal && state.ratingDeliveryId) {
+                renderRatingModal();
+            }
+        }
+
+        const syncIcon = () => state.isSyncing ?
+            `<div class="spinner"></div>` :
+            `<i data-lucide="cloud" class="w-4 h-4 text-blue-200"></i>`;
+
+        // ============================================================
+        // 10. LOGIN (Customer)
+        // ============================================================
+        function renderLogin() {
+            return `
+            <div class="min-h-screen flex flex-col items-center justify-center p-4 fade-in bg-gradient-to-br from-blue-50 to-indigo-50">
+                <div class="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden">
+                    <div class="bg-blue-600 p-8 text-center relative">
+                        <div class="w-20 h-20 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg transform -translate-y-2">
+                            <i data-lucide="trending-up" class="text-blue-600 w-10 h-10"></i>
+                        </div>
+                        <h1 class="text-3xl font-black text-white tracking-tight">MilkSync</h1>
+                        <p class="text-blue-100 mt-1 font-medium">Fresh Dairy • Smart Delivery</p>
+                    </div>
+                    <div class="p-6 space-y-5">
+                        <div>
+                            <h2 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Customer Sign In</h2>
+                            <form onsubmit="handlePhoneLogin(event)" class="space-y-3">
+                                <div class="relative">
+                                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                        <span class="text-gray-400 font-bold text-sm">+91</span>
+                                    </div>
+                                    <input type="tel" id="loginPhone" placeholder="Enter your phone number" required
+                                        class="w-full pl-14 pr-4 py-3.5 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" />
+                                </div>
+                                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg transition-all active:scale-95 flex justify-center items-center gap-2">
+                                    <i data-lucide="log-in" class="w-5 h-5"></i> Continue
+                                </button>
+                            </form>
+                            <p class="text-center text-xs text-gray-400 mt-3">🔑 Use your registered phone number</p>
+                        </div>
+                        <div class="border-t pt-4">
+                            <p class="text-xs text-gray-400 text-center">${BUSINESS_NAME} • ${BUSINESS_TAGLINE}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        window.handlePhoneLogin = async (e) => {
+            e.preventDefault();
+            const phone = document.getElementById('loginPhone').value.trim();
+            if (!phone) return;
+
+            const customer = state.customers.find(c => c.phone === phone);
+            if (customer) {
+                state.currentUser = customer;
+                state.view = 'landing';
+                renderApp();
+            } else {
+                alert('No account found with this phone number. Please contact the milkman to register.');
+            }
+        };
+
+        // ============================================================
+        // 11. CUSTOMER LANDING PAGE
+        // ============================================================
+        function renderLanding() {
+            const c = state.currentUser;
+            if (!c) return '<div class="p-4">Session expired. Please login again.</div>';
+
+            const unreadCount = getUnreadCount(c.id);
+
+            return `
+            <div class="min-h-screen bg-gray-50 fade-in">
+                <div class="bg-gradient-to-br from-blue-700 to-blue-900 text-white p-6 sticky top-0 z-10 shadow-lg">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h1 class="text-2xl font-black tracking-tight">👋 Welcome, ${c.name.split(' ')[0]}</h1>
+                            <p class="text-blue-200 text-sm">${c.locality}, ${c.area}</p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            ${unreadCount > 0 ? `<span class="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">${unreadCount}</span>` : ''}
+                            <button onclick="logout()" class="p-2 bg-white/10 rounded-full active:scale-95 backdrop-blur-sm">
+                                <i data-lucide="log-out" class="w-5 h-5"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-4 space-y-5 max-w-2xl mx-auto">
+                    <!-- Business Info -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center">
+                                <i data-lucide="store" class="text-blue-600 w-6 h-6"></i>
+                            </div>
+                            <div>
+                                <h2 class="font-extrabold text-gray-900">${BUSINESS_NAME}</h2>
+                                <p class="text-xs text-gray-500">${BUSINESS_TAGLINE}</p>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3 text-sm">
+                            <div class="flex items-center gap-2 text-gray-600">
+                                <i data-lucide="map-pin" class="w-4 h-4 text-gray-400"></i> ${BUSINESS_ADDRESS}
+                            </div>
+                            <div class="flex items-center gap-2 text-gray-600">
+                                <i data-lucide="phone" class="w-4 h-4 text-gray-400"></i> ${BUSINESS_PHONE}
+                            </div>
+                            <div class="flex items-center gap-2 text-gray-600 col-span-2">
+                                <i data-lucide="mail" class="w-4 h-4 text-gray-400"></i> ${BUSINESS_EMAIL}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Packages & Pricing -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+                        <h3 class="font-extrabold text-gray-900 mb-3 flex items-center gap-2">
+                            <i data-lucide="package" class="w-5 h-5 text-blue-600"></i> Our Packages
+                        </h3>
+                        <div class="grid grid-cols-3 gap-3">
+                            <div class="bg-blue-50 rounded-xl p-3 text-center">
+                                <div class="text-2xl mb-1">🥛</div>
+                                <div class="font-bold text-gray-900 text-sm">Milk</div>
+                                <div class="text-xs text-gray-600">${formatCurrency(PRICES.milk)}/pkt</div>
+                            </div>
+                            <div class="bg-yellow-50 rounded-xl p-3 text-center">
+                                <div class="text-2xl mb-1">🥣</div>
+                                <div class="font-bold text-gray-900 text-sm">Curd</div>
+                                <div class="text-xs text-gray-600">${formatCurrency(PRICES.curd)}/pkt</div>
+                            </div>
+                            <div class="bg-orange-50 rounded-xl p-3 text-center">
+                                <div class="text-2xl mb-1">🧈</div>
+                                <div class="font-bold text-gray-900 text-sm">Ghee</div>
+                                <div class="text-xs text-gray-600">${formatCurrency(PRICES.ghee)}/jar</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Your Plan -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="font-extrabold text-gray-900 flex items-center gap-2">
+                                <i data-lucide="clipboard-list" class="w-5 h-5 text-blue-600"></i> Your Subscription
+                            </h3>
+                            <span class="badge-area">${c.frequency}</span>
+                        </div>
+                        <div class="flex gap-3 flex-wrap">
+                            ${c.plan.milk > 0 ? `<div class="bg-gray-50 px-4 py-2 rounded-xl text-sm font-bold">🥛 ${c.plan.milk} pkt/day</div>` : ''}
+                            ${c.plan.curd > 0 ? `<div class="bg-gray-50 px-4 py-2 rounded-xl text-sm font-bold">🥣 ${c.plan.curd} pkt/day</div>` : ''}
+                            ${c.plan.ghee > 0 ? `<div class="bg-gray-50 px-4 py-2 rounded-xl text-sm font-bold">🧈 ${c.plan.ghee} jar/day</div>` : ''}
+                        </div>
+                        <div class="mt-3 flex justify-between items-center bg-gray-50 rounded-xl p-3">
+                            <span class="text-sm font-medium text-gray-600">Current Balance</span>
+                            <span class="text-xl font-black text-red-500">${formatCurrency(c.balance)}</span>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <button onclick="goToDashboard()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2">
+                            <i data-lucide="layout-dashboard" class="w-5 h-5"></i> Dashboard
+                        </button>
+                        <button onclick="chatMilkman('${c.name}')" class="bg-[#25D366] hover:bg-[#20b859] text-white font-bold py-4 rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2">
+                            <i data-lucide="message-circle" class="w-5 h-5"></i> Chat Milkman
+                        </button>
+                    </div>
+
+                    <!-- Notifications -->
+                    ${state.notifications.filter(n => n.customerId === c.id && !n.read).length > 0 ? `
+                        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                            <h4 class="font-bold text-gray-900 text-sm mb-2 flex items-center gap-2">
+                                <i data-lucide="bell" class="w-4 h-4 text-blue-600"></i> Notifications
+                            </h4>
+                            ${state.notifications.filter(n => n.customerId === c.id && !n.read).slice(0,3).map(n => `
+                                <div class="bg-blue-50 p-3 rounded-xl mb-2 flex justify-between items-start">
+                                    <div>
+                                        <p class="text-sm font-medium text-gray-800">${n.message}</p>
+                                        <p class="text-[10px] text-gray-400">${new Date(n.createdAt).toLocaleString()}</p>
+                                    </div>
+                                    <button onclick="markNotificationRead('${n.id}')" class="text-xs bg-blue-200 px-3 py-1 rounded-lg font-bold">Mark read</button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>`;
+        }
+
+        window.goToDashboard = () => {
+            state.view = 'dashboard';
+            state.customerTab = 'overview';
+            renderApp();
+        };
+
+        window.chatMilkman = (name) => {
+            const text = `Hi, this is ${name}. I need to update my milk plan.`;
+            window.open(`https://wa.me/${ADMIN_PHONE}?text=${encodeURIComponent(text)}`, '_blank');
+        };
+
+        window.logout = () => {
+            state.view = 'login';
+            state.currentUser = null;
+            state.selectedDate = null;
+            state.showRatingModal = false;
+            state.ratingDeliveryId = null;
+            state.pendingRating = null;
+            renderApp();
+        };
+
+        // ============================================================
+        // 12. CUSTOMER DASHBOARD
+        // ============================================================
+        function renderDashboard() {
+            const c = state.currentUser;
+            if (!c) return '<div class="p-4">Session expired. Please login again.</div>';
+
+            let content = '';
+            if (state.customerTab === 'overview') content = renderOverview(c);
+            else if (state.customerTab === 'calendar') content = renderCalendar(c);
+            else if (state.customerTab === 'analytics') content = renderAnalytics(c);
+            else if (state.customerTab === 'payments') content = renderPayments(c);
+
+            const unreadCount = getUnreadCount(c.id);
+
+            return `
+            <div class="min-h-screen pb-20 fade-in bg-gray-50">
+                <div class="bg-white text-gray-900 p-4 shadow-md sticky top-0 z-10 flex justify-between items-center border-b border-gray-100">
+                    <div class="flex items-center gap-2">
+                        <button onclick="goToLanding()" class="p-1.5 rounded-full hover:bg-gray-100">
+                            <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                        </button>
+                        <div>
+                            <h1 class="text-lg font-black tracking-tight">Dashboard</h1>
+                            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">${c.locality}, ${c.area}</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        ${unreadCount > 0 ? `<span class="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">${unreadCount}</span>` : ''}
+                        <button onclick="logout()" class="text-gray-400 p-1 active:scale-95"><i data-lucide="log-out" class="w-5 h-5"></i></button>
+                    </div>
+                </div>
+
+                <div class="p-4">${content}</div>
+
+                <!-- Bottom Nav -->
+                <div class="fixed bottom-0 w-full bg-white border-t flex justify-around p-2 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)] pb-safe z-50">
+                    <button onclick="setCustomerTab('overview')" class="flex flex-col items-center p-2 min-w-[64px] ${state.customerTab === 'overview' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.customerTab === 'overview' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="home" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Overview</span>
+                    </button>
+                    <button onclick="setCustomerTab('calendar')" class="flex flex-col items-center p-2 min-w-[64px] ${state.customerTab === 'calendar' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.customerTab === 'calendar' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="calendar" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Calendar</span>
+                    </button>
+                    <button onclick="setCustomerTab('analytics')" class="flex flex-col items-center p-2 min-w-[64px] ${state.customerTab === 'analytics' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.customerTab === 'analytics' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="bar-chart-2" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Analytics</span>
+                    </button>
+                    <button onclick="setCustomerTab('payments')" class="flex flex-col items-center p-2 min-w-[64px] ${state.customerTab === 'payments' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.customerTab === 'payments' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="credit-card" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Payments</span>
+                    </button>
+                </div>
+            </div>`;
+        }
+
+        window.goToLanding = () => {
+            state.view = 'landing';
+            renderApp();
+        };
+
+        window.setCustomerTab = (tab) => {
+            state.customerTab = tab;
+            renderApp();
+        };
+
+        // ---- OVERVIEW ----
+        function renderOverview(c) {
+            const thisMonth = new Date().getMonth();
+            const thisYear = new Date().getFullYear();
+            const monthDels = state.deliveries.filter(d =>
+                d.customerId === c.id &&
+                new Date(d.date).getMonth() === thisMonth &&
+                new Date(d.date).getFullYear() === thisYear
+            );
+            const delivered = monthDels.filter(d => d.status === 'delivered').length;
+            const skipped = monthDels.filter(d => d.status !== 'delivered').length;
+            const totalDays = new Date(thisYear, thisMonth + 1, 0).getDate();
+
+            return `
+            <div class="space-y-4">
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                        <p class="text-xs font-bold text-gray-400 uppercase">This Month</p>
+                        <p class="text-2xl font-black text-gray-900">${delivered}/${totalDays}</p>
+                        <p class="text-xs text-green-600 font-bold">${delivered} deliveries</p>
+                    </div>
+                    <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                        <p class="text-xs font-bold text-gray-400 uppercase">Skips</p>
+                        <p class="text-2xl font-black text-gray-900">${skipped}</p>
+                        <p class="text-xs text-orange-600 font-bold">${skipped} skipped</p>
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                    <h3 class="font-extrabold text-gray-800 text-sm mb-3">Your Plan</h3>
+                    <div class="flex gap-2 flex-wrap">
+                        ${c.plan.milk > 0 ? `<span class="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg font-bold text-sm">🥛 ${c.plan.milk} pkt</span>` : ''}
+                        ${c.plan.curd > 0 ? `<span class="bg-yellow-50 text-yellow-700 px-3 py-1.5 rounded-lg font-bold text-sm">🥣 ${c.plan.curd} pkt</span>` : ''}
+                        ${c.plan.ghee > 0 ? `<span class="bg-orange-50 text-orange-700 px-3 py-1.5 rounded-lg font-bold text-sm">🧈 ${c.plan.ghee} jar</span>` : ''}
+                    </div>
+                    <div class="mt-3 flex justify-between items-center bg-gray-50 rounded-xl p-3">
+                        <span class="text-sm font-medium text-gray-600">Balance</span>
+                        <span class="text-xl font-black text-red-500">${formatCurrency(c.balance)}</span>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                    <h3 class="font-extrabold text-gray-800 p-4 border-b text-sm">Recent Deliveries</h3>
+                    <div class="divide-y divide-gray-50">
+                        ${state.deliveries.filter(d => d.customerId === c.id).sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0,7).map(d => `
+                            <div class="p-3 flex justify-between items-center">
+                                <div class="flex items-center gap-3">
+                                    ${d.status === 'delivered' ? `<i data-lucide="check-circle" class="text-green-500 w-5 h-5"></i>` : `<i data-lucide="x-circle" class="text-red-500 w-5 h-5"></i>`}
+                                    <div>
+                                        <p class="font-bold text-gray-900 text-sm">${formatDate(d.date)}</p>
+                                        <p class="text-[10px] font-bold text-gray-400 uppercase">${d.status === 'delivered' ? 'Delivered' : 'Paused'}</p>
+                                    </div>
+                                </div>
+                                ${d.status === 'delivered' ? `
+                                    <span class="text-sm font-black text-gray-900 bg-gray-100 px-3 py-1 rounded-lg">
+                                        ${formatCurrency((d.items.milk * PRICES.milk) + (d.items.curd * PRICES.curd) + (d.items.ghee * PRICES.ghee))}
+                                    </span>
+                                ` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        // ---- CALENDAR ----
+        function renderCalendar(c) {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = now.getMonth();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const firstDay = new Date(year, month, 1).getDay();
+
+            let days = [];
+            for (let i = 0; i < firstDay; i++) days.push(null);
+            for (let d = 1; d <= daysInMonth; d++) {
+                const dateObj = new Date(year, month, d);
+                const dateStr = getLocalDateString(dateObj);
+                const delivery = state.deliveries.find(del => del.customerId === c.id && del.date === dateStr);
+                const ndr = state.noDeliveryRequests.find(r => r.customerId === c.id && r.date === dateStr && r.status ===
+                    'approved');
+                const isHoliday = state.holidays.some(h => h.date === dateStr);
+                days.push({ day: d, dateStr, delivery, ndr, isHoliday, isPast: dateObj < now });
+            }
+
+            const monthName = now.toLocaleString('en-US', { month: 'long' });
+            const pendingNdr = state.noDeliveryRequests.filter(r => r.customerId === c.id && r.status === 'pending');
+
+            return `
+            <div class="space-y-4">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-xl font-extrabold text-gray-800 tracking-tight">${monthName} ${year}</h2>
+                    <button onclick="requestNoDeliveryForDate()" class="text-xs bg-red-50 text-red-700 px-3 py-1.5 rounded-lg font-bold border border-red-200 active:scale-95">
+                        <i data-lucide="calendar-x" class="w-3 h-3 inline"></i> Pause a day
+                    </button>
+                </div>
+
+                <div class="flex gap-3 text-[10px] font-bold">
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-green-500"></span> Delivered</span>
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-red-400"></span> Paused</span>
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-yellow-400"></span> Pending</span>
+                    <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-gray-200"></span> No delivery</span>
+                </div>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                    <div class="calendar-grid">
+                        ${['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => `<div class="text-center text-[10px] font-bold text-gray-400 py-1">${d}</div>`).join('')}
+                        ${days.map((cell, idx) => {
+                            if (!cell) return `<div key="${idx}"></div>`;
+                            let bg = 'bg-white text-gray-900';
+                            let icon = '';
+                            if (cell.isHoliday) { bg = 'bg-yellow-100 text-yellow-800'; }
+                            if (cell.delivery) {
+                                if (cell.delivery.status === 'delivered') { bg = 'bg-green-100 text-green-800'; icon = '✓'; }
+                                else if (cell.delivery.status === 'skipped' || cell.delivery.status === 'customer_skipped') { bg = 'bg-red-100 text-red-800'; icon = '✗'; }
+                            }
+                            if (cell.ndr) { bg = 'bg-gray-200 text-gray-500'; icon = '🚫'; }
+                            const pending = state.noDeliveryRequests.find(r => r.customerId === c.id && r.date === cell.dateStr && r.status === 'pending');
+                            if (pending) { bg = 'bg-yellow-100 text-yellow-800'; icon = '⏳'; }
+
+                            const isToday = cell.dateStr === todayStr;
+                            return `
+                                <div class="calendar-day ${bg} ${isToday ? 'ring-2 ring-blue-500' : ''} ${cell.isPast ? 'opacity-90' : 'opacity-60'}" 
+                                     onclick="selectDate('${cell.dateStr}')">
+                                    ${cell.day} ${icon}
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+
+                ${state.selectedDate ? renderDateDetails(c, state.selectedDate) : ''}
+
+                ${pendingNdr.length > 0 ? `
+                    <div class="bg-yellow-50 border border-yellow-200 rounded-2xl p-4">
+                        <h4 class="font-bold text-yellow-800 text-sm mb-2">⏳ Pending Pause Requests</h4>
+                        ${pendingNdr.map(r => `
+                            <div class="flex justify-between items-center bg-white p-3 rounded-xl mb-2">
+                                <span>${formatDate(r.date)} — ${r.reason || 'No reason'}</span>
+                                <span class="text-[10px] font-bold text-yellow-600">Waiting for approval</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+            </div>`;
+        }
+
+        window.selectDate = (dateStr) => {
+            state.selectedDate = dateStr;
+            renderApp();
+        };
+
+        function renderDateDetails(c, dateStr) {
+            const delivery = state.deliveries.find(d => d.customerId === c.id && d.date === dateStr);
+            const ndr = state.noDeliveryRequests.find(r => r.customerId === c.id && r.date === dateStr);
+            const isHoliday = state.holidays.some(h => h.date === dateStr);
+            const isFuture = new Date(dateStr) > new Date();
+
+            let statusText = 'No record';
+            let statusColor = 'text-gray-400';
+            let items = '';
+
+            if (isHoliday) { statusText = 'Holiday 🎉';
+                statusColor = 'text-yellow-600'; } else if (delivery) {
+                if (delivery.status === 'delivered') {
+                    statusText = 'Delivered ✓';
+                    statusColor = 'text-green-600';
+                    items = `🥛 ${delivery.items.milk} 🥣 ${delivery.items.curd} 🧈 ${delivery.items.ghee}`;
+                } else {
+                    statusText = 'Paused ✗';
+                    statusColor = 'text-red-600';
+                }
+            } else if (ndr) {
+                if (ndr.status === 'approved') { statusText = 'No Delivery 🚫';
+                    statusColor = 'text-gray-500'; } else if (ndr.status === 'pending') { statusText = 'Pending Approval ⏳';
+                    statusColor = 'text-yellow-600'; } else { statusText = 'Rejected';
+                    statusColor = 'text-orange-600'; }
+            }
+
+            return `
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h4 class="font-extrabold text-gray-900">${formatDate(dateStr)}</h4>
+                        <p class="text-sm font-medium ${statusColor}">${statusText}</p>
+                        ${items ? `<p class="text-xs text-gray-600 mt-1">${items}</p>` : ''}
+                    </div>
+                    ${isFuture && !isHoliday && !delivery ? `
+                        <button onclick="requestNoDeliveryForDate('${dateStr}')" class="text-xs bg-red-50 text-red-700 px-3 py-1.5 rounded-lg font-bold border border-red-200 active:scale-95">
+                            <i data-lucide="x-circle" class="w-3 h-3 inline"></i> Request Pause
+                        </button>
+                    ` : ''}
+                </div>
+            </div>`;
+        }
+
+        window.requestNoDeliveryForDate = (dateStr = null) => {
+            const c = state.currentUser;
+            if (!c) return;
+
+            if (!dateStr) {
+                const date = prompt('Enter date (YYYY-MM-DD) to request no delivery:');
+                if (!date) return;
+                dateStr = date;
+            }
+
+            const existing = state.noDeliveryRequests.find(r => r.customerId === c.id && r.date === dateStr);
+            if (existing) {
+                if (existing.status === 'approved') { alert('Already approved for no delivery on this date.'); return; }
+                if (existing.status === 'pending') { alert('A request is already pending for this date.'); return; }
+            }
+
+            const reason = prompt('Reason for pausing delivery (optional):');
+            state.noDeliveryRequests.push({
+                id: generateId(),
+                customerId: c.id,
+                date: dateStr,
+                reason: reason || 'Customer request',
+                status: 'pending',
+                createdAt: new Date().toISOString()
+            });
+
+            addNotification('admin', 'request',
+                `📩 ${c.name} requested no delivery on ${formatDate(dateStr)}. Reason: ${reason || 'Not specified'}`
+            );
+
+            saveData();
+            state.selectedDate = dateStr;
+            renderApp();
+            alert('Request sent to milkman for approval.');
+        };
+
+        // ---- ANALYTICS ----
+        function renderAnalytics(c) {
+            const a = getCustomerAnalytics(c.id);
+            const cDels = state.deliveries.filter(d => d.customerId === c.id);
+            const rated = cDels.filter(d => d.rating !== null);
+
+            const badge = (pct) => {
+                const n = parseFloat(pct);
+                if (n > 0) return `<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-[10px] font-bold">↑ ${pct}%</span>`;
+                if (n < 0) return `<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded text-[10px] font-bold">↓ ${Math.abs(n)}%</span>`;
+                return `<span class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px] font-bold">- 0%</span>`;
+            };
+
+            return `
+            <div class="space-y-4">
+                <h2 class="text-xl font-extrabold text-gray-800 tracking-tight">Your Performance</h2>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">Today (DoD)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.today)}</p>
+                        ${badge(a.dod.pct)}
+                    </div>
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">This Wk (WoW)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.wow.val)}</p>
+                        ${badge(a.wow.pct)}
+                    </div>
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">This Mo (MoM)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.mom.val)}</p>
+                        ${badge(a.mom.pct)}
+                    </div>
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">This Yr (YoY)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.yoy.val)}</p>
+                        ${badge(a.yoy.pct)}
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                    <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4">Your 30-Day Revenue Trend</h3>
+                    <div class="w-full h-48"><canvas id="customerRevenueChart"></canvas></div>
+                </div>
+
+                ${rated.length > 0 ? `
+                    <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                        <h3 class="font-extrabold text-gray-800 text-sm mb-2">⭐ Your Ratings</h3>
+                        <div class="flex items-center gap-3">
+                            <div class="text-3xl font-black text-yellow-500">${(rated.reduce((s,d) => s + d.rating, 0) / rated.length).toFixed(1)}</div>
+                            <div class="text-sm text-gray-500">${rated.length} ratings</div>
+                        </div>
+                        <div class="flex gap-2 mt-2 flex-wrap">
+                            ${rated.slice(0,5).map(d => `
+                                <span class="bg-gray-50 px-2 py-1 rounded-lg text-xs">
+                                    ${formatDate(d.date)}: ${'⭐'.repeat(d.rating)} ${d.ratingComment ? `"${d.ratingComment}"` : ''}
+                                </span>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+            </div>`;
+        }
+
+        function renderCustomerChart() {
+            const c = state.currentUser;
+            if (!c) return;
+            const ctx = document.getElementById('customerRevenueChart');
+            if (!ctx) return;
+            if (customerChartInstance) { customerChartInstance.destroy();
+                customerChartInstance = null; }
+
+            const labels = [];
+            const data = [];
+            const now = new Date();
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date(now);
+                d.setDate(d.getDate() - i);
+                labels.push(`${d.getDate()}/${d.getMonth()+1}`);
+                const dStr = getLocalDateString(d);
+                const dayDel = state.deliveries.filter(del => del.customerId === c.id && del.date === dStr && del.status ===
+                    'delivered');
+                data.push(calculateRevenue(dayDel));
+            }
+
+            customerChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Revenue (₹)',
+                        data,
+                        borderColor: '#2563eb',
+                        backgroundColor: 'rgba(37,99,235,0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHitRadius: 20
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+                        y: { border: { display: false }, ticks: { font: { size: 10 }, callback: v => '₹' + v } }
+                    }
+                }
+            });
+        }
+
+        // ---- PAYMENTS ----
+        function renderPayments(c) {
+            const payments = state.deliveries
+                .filter(d => d.customerId === c.id && d.status === 'delivered')
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .slice(0, 20);
+
+            return `
+            <div class="space-y-4">
+                <h2 class="text-xl font-extrabold text-gray-800 tracking-tight">Payment History</h2>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                    <div class="flex justify-between items-center mb-3">
+                        <span class="text-sm font-medium text-gray-600">Outstanding Balance</span>
+                        <span class="text-2xl font-black text-red-500">${formatCurrency(c.balance)}</span>
+                    </div>
+                    <button onclick="makePayment('${c.id}')" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition-all active:scale-95">
+                        <i data-lucide="credit-card" class="w-4 h-4 inline"></i> Make Payment
+                    </button>
+                </div>
+
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                    <h3 class="font-extrabold text-gray-800 p-4 border-b text-sm">Recent Charges</h3>
+                    <div class="divide-y divide-gray-50">
+                        ${payments.map(d => `
+                            <div class="p-3 flex justify-between items-center">
+                                <div>
+                                    <p class="font-bold text-gray-900 text-sm">${formatDate(d.date)}</p>
+                                    <p class="text-[10px] text-gray-400">${d.items.milk} milk, ${d.items.curd} curd, ${d.items.ghee} ghee</p>
+                                </div>
+                                <span class="font-black text-gray-900">${formatCurrency((d.items.milk * PRICES.milk) + (d.items.curd * PRICES.curd) + (d.items.ghee * PRICES.ghee))}</span>
+                            </div>
+                        `).join('')}
+                        ${payments.length === 0 ? '<p class="p-4 text-center text-gray-400 text-sm">No payment records yet.</p>' : ''}
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        window.makePayment = async (custId) => {
+            const cust = state.customers.find(c => c.id === custId);
+            const amt = prompt(`Enter payment amount (Balance: ${formatCurrency(cust.balance)}):`);
+            if (amt && !isNaN(amt) && parseFloat(amt) > 0) {
+                const payAmt = parseFloat(amt);
+                cust.balance = Math.max(0, cust.balance - payAmt);
+                addNotification(cust.id, 'payment', `Payment of ${formatCurrency(payAmt)} received. New balance: ${formatCurrency(cust.balance)}`);
+                await saveData();
+                alert(`✅ Payment of ${formatCurrency(payAmt)} recorded. New balance: ${formatCurrency(cust.balance)}`);
+            }
+        };
+
+        // ============================================================
+        // 13. RATING MODAL
+        // ============================================================
+        function renderRatingModal() {
+            const delivery = state.deliveries.find(d => d.id === state.ratingDeliveryId);
+            if (!delivery) { state.showRatingModal = false; return; }
+            const cust = state.customers.find(c => c.id === delivery.customerId);
+            if (!cust) { state.showRatingModal = false; return; }
+
+            if (delivery.rating !== null && delivery.rating !== undefined) {
+                state.showRatingModal = false;
+                renderApp();
+                return;
+            }
+
+            const modal = document.createElement('div');
+            modal.id = 'ratingModal';
+            modal.className =
+                'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm fade-in';
+            modal.innerHTML = `
+                <div class="w-full max-w-sm bg-white rounded-3xl shadow-2xl p-6 text-center">
+                    <div class="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i data-lucide="star" class="text-blue-600 w-8 h-8"></i>
+                    </div>
+                    <h3 class="text-xl font-black text-gray-900 mb-1">How was your delivery?</h3>
+                    <p class="text-sm text-gray-500 mb-4">Rate your ${formatDate(todayStr)} delivery from ${cust.name}</p>
+
+                    <div class="rating-stars justify-center mb-4">
+                        ${[1,2,3,4,5].map(s => `
+                            <button onclick="setPendingRating(${s})" class="text-2xl ${state.pendingRating && state.pendingRating >= s ? 'text-yellow-400' : 'text-gray-300'} transition-all hover:scale-110">
+                                ${state.pendingRating && state.pendingRating >= s ? '⭐' : '☆'}
+                            </button>
+                        `).join('')}
+                    </div>
+
+                    <input type="text" id="ratingComment" placeholder="Any feedback? (optional)" class="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-4" />
+
+                    <div class="flex gap-3">
+                        <button onclick="submitRating()" class="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl active:scale-95" ${!state.pendingRating ? 'disabled' : ''}>
+                            Submit Rating
+                        </button>
+                        <button onclick="skipRating()" class="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-xl active:scale-95">
+                            Skip
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+            lucide.createIcons();
+        }
+
+        window.setPendingRating = (score) => {
+            state.pendingRating = score;
+            const modal = document.getElementById('ratingModal');
+            if (modal) modal.remove();
+            renderRatingModal();
+        };
+
+        window.submitRating = async () => {
+            const delivery = state.deliveries.find(d => d.id === state.ratingDeliveryId);
+            if (!delivery) { state.showRatingModal = false;
+                renderApp(); return; }
+
+            const comment = document.getElementById('ratingComment')?.value || '';
+
+            if (state.pendingRating) {
+                delivery.rating = state.pendingRating;
+                delivery.ratingComment = comment;
+
+                const cust = state.customers.find(c => c.id === delivery.customerId);
+                if (cust) {
+                    const custDels = state.deliveries.filter(d => d.customerId === cust.id && d.rating !== null);
+                    const total = custDels.reduce((s, d) => s + d.rating, 0) + state.pendingRating;
+                    const count = custDels.length + 1;
+                    cust.avgRating = total / count;
+                    cust.totalRatings = count;
+                }
+
+                state.ratings.push({
+                    id: generateId(),
+                    deliveryId: delivery.id,
+                    customerId: delivery.customerId,
+                    rating: state.pendingRating,
+                    comment: comment,
+                    date: todayStr
+                });
+
+                await saveData();
+                state.showRatingModal = false;
+                state.ratingDeliveryId = null;
+                state.pendingRating = null;
+                renderApp();
+                alert('Thank you for your rating! ⭐');
+            }
+        };
+
+        window.skipRating = () => {
+            state.showRatingModal = false;
+            state.ratingDeliveryId = null;
+            state.pendingRating = null;
+            const modal = document.getElementById('ratingModal');
+            if (modal) modal.remove();
+            renderApp();
+        };
+
+        // ============================================================
+        // 14. INITIALIZATION
+        // ============================================================
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initData();
+            renderApp();
+
+            const todaysDel = state.deliveries.filter(d => d.date === todayStr && d.status === 'delivered' && (d
+                .rating === null || d.rating === undefined));
+            if (todaysDel.length > 0 && state.view === 'dashboard') {
+                // Rating modal will be triggered by the delivery update flow
+            }
+        });
+
+        // Override renderApp to include rating modal
+        const originalRender = renderApp;
+        renderApp = function() {
+            originalRender();
+            if (state.showRatingModal && state.ratingDeliveryId) {
+                const existing = document.getElementById('ratingModal');
+                if (existing) existing.remove();
+                renderRatingModal();
+            }
+        };
+    </script>
+</body>
+</html>
