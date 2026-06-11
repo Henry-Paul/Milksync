@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>MilkSync — Admin Dashboard</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com">
+    </script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest">
+    </script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js">
+    </script>
+
+    <style>
+        .pb-safe {
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+        .pt-safe {
+            padding-top: env(safe-area-inset-top, 0px);
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(5px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        .spinner {
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+        .badge-area {
+            display: inline-block;
+            background: #eef2ff;
+            color: #4338ca;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 0.15rem 0.6rem;
+            border-radius: 9999px;
+            letter-spacing: 0.025em;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans antialiased overflow-x-hidden pt-safe">
+
+    <div id="app" class="w-full min-h-screen relative pb-safe"></div>
+
+    <script>
+        // ============================================================
+        // 1.  SHEETBEST CONFIGURATION — EDIT THESE VALUES
+        // ============================================================
+        const SHEETBEST_API_KEY = 'YOUR_SHEETBEST_API_KEY'; // ← Replace
+        const SHEETBEST_SHEET_ID = 'YOUR_SHEETBEST_SHEET_ID'; // ← Replace
+        const SHEETBEST_BASE = `https://sheetbest.com/api/sheets/${SHEETBEST_SHEET_ID}`;
+
+        // ============================================================
+        // 2.  PRICES & CONSTANTS
+        // ============================================================
+        const PRICES = { milk: 55, curd: 30, ghee: 550 };
+        const ADMIN_PHONE = '919876543210';
+        const BUSINESS_NAME = 'MilkSync Dairy';
+        const BUSINESS_TAGLINE = 'Fresh Milk & Dairy Products Delivered Daily';
+
+        // ============================================================
+        // 3.  STATE
+        // ============================================================
+        let state = {
+            view: 'login', // 'login' | 'dashboard'
+            adminTab: 'daily', // 'daily' | 'customers' | 'analytics' | 'requests'
+            customers: [],
+            deliveries: [],
+            holidays: [],
+            noDeliveryRequests: [],
+            notifications: [],
+            ratings: [],
+            isSyncing: false,
+            settingsMode: null,
+            settingsCustomerId: null
+        };
+
+        // ============================================================
+        // 4.  UTILITY
+        // ============================================================
+        const getLocalDateString = (dateObj = new Date()) => {
+            const offset = dateObj.getTimezoneOffset() * 60000;
+            return (new Date(dateObj - offset)).toISOString().split('T')[0];
+        };
+        const todayStr = getLocalDateString();
+        const generateId = () => 'id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        const formatDate = (dateStr) => {
+            const d = new Date(dateStr + 'T00:00:00');
+            return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+        };
+        const formatCurrency = (num) => '₹' + Number(num).toLocaleString('en-IN');
+
+        // ============================================================
+        // 5.  SHEETBEST API
+        // ============================================================
+        async function sheetBestFetch(method = 'GET', data = null) {
+            const options = {
+                method,
+                headers: { 'Content-Type': 'application/json', 'x-api-key': SHEETBEST_API_KEY }
+            };
+            if (data) options.body = JSON.stringify(data);
+            try {
+                const res = await fetch(SHEETBEST_BASE, options);
+                if (!res.ok) throw new Error(`SheetBest ${res.status}`);
+                return await res.json();
+            } catch (err) {
+                console.warn('[SheetBest]', err.message);
+                return null;
+            }
+        }
+
+        async function loadDataFromSheetBest() {
+            const raw = await sheetBestFetch('GET');
+            if (!raw || !raw.data) return false;
+            const d = raw.data;
+            state.customers = d.customers || [];
+            state.deliveries = d.deliveries || [];
+            state.holidays = d.holidays || [];
+            state.noDeliveryRequests = d.noDeliveryRequests || [];
+            state.notifications = d.notifications || [];
+            state.ratings = d.ratings || [];
+            return true;
+        }
+
+        async function saveDataToSheetBest() {
+            const payload = {
+                customers: state.customers,
+                deliveries: state.deliveries,
+                holidays: state.holidays,
+                noDeliveryRequests: state.noDeliveryRequests,
+                notifications: state.notifications,
+                ratings: state.ratings
+            };
+            state.isSyncing = true;
+            renderApp();
+            const ok = await sheetBestFetch('POST', payload);
+            state.isSyncing = false;
+            renderApp();
+            return !!ok;
+        }
+
+        function fallbackSave() {
+            try {
+                localStorage.setItem('milkSync_customers', JSON.stringify(state.customers));
+                localStorage.setItem('milkSync_deliveries', JSON.stringify(state.deliveries));
+                localStorage.setItem('milkSync_holidays', JSON.stringify(state.holidays));
+                localStorage.setItem('milkSync_noDeliveryRequests', JSON.stringify(state.noDeliveryRequests));
+                localStorage.setItem('milkSync_notifications', JSON.stringify(state.notifications));
+                localStorage.setItem('milkSync_ratings', JSON.stringify(state.ratings));
+            } catch (_) {}
+        }
+
+        function fallbackLoad() {
+            try {
+                const c = localStorage.getItem('milkSync_customers');
+                const d = localStorage.getItem('milkSync_deliveries');
+                const h = localStorage.getItem('milkSync_holidays');
+                const n = localStorage.getItem('milkSync_noDeliveryRequests');
+                const notif = localStorage.getItem('milkSync_notifications');
+                const r = localStorage.getItem('milkSync_ratings');
+                if (c) state.customers = JSON.parse(c);
+                if (d) state.deliveries = JSON.parse(d);
+                if (h) state.holidays = JSON.parse(h);
+                if (n) state.noDeliveryRequests = JSON.parse(n);
+                if (notif) state.notifications = JSON.parse(notif);
+                if (r) state.ratings = JSON.parse(r);
+                return !!(c && d);
+            } catch (_) { return false; }
+        }
+
+        async function saveData() {
+            const ok = await saveDataToSheetBest();
+            if (!ok) fallbackSave();
+            if (!ok) renderApp();
+        }
+
+        async function initData() {
+            const loaded = await loadDataFromSheetBest();
+            if (!loaded) {
+                const fallbackOk = fallbackLoad();
+                if (!fallbackOk || state.customers.length === 0) seedInitialData();
+            }
+            if (!state.holidays) state.holidays = [];
+            if (!state.noDeliveryRequests) state.noDeliveryRequests = [];
+            if (!state.notifications) state.notifications = [];
+            if (!state.ratings) state.ratings = [];
+            state.deliveries = state.deliveries.map(d => {
+                if (!d.items) d.items = { milk: 0, curd: 0, ghee: 0 };
+                if (!d.rating) d.rating = null;
+                return d;
+            });
+            renderApp();
+        }
+
+        // ============================================================
+        // 6.  SEED DATA
+        // ============================================================
+        function seedInitialData() {
+            const INITIAL_CUSTOMERS = [
+                { id: 'c1', name: 'Ravi Kumar', phone: '919876543210', address: 'Flat 101, Oakwood Apts', locality: 'Shivaji Colony',
+                    area: 'Sanath Nagar', mapsLink: 'https://maps.google.com', plan: { milk: 2, curd: 1, ghee: 0 },
+                    frequency: 'monthly', balance: 1250, avgRating: 0, totalRatings: 0 },
+                { id: 'c2', name: 'Priya Sharma', phone: '919876543211', address: 'Villa 4, Sunrise Layout', locality: 'Bhagya Nagar',
+                    area: 'Sanath Nagar', mapsLink: 'https://maps.google.com', plan: { milk: 1, curd: 0, ghee: 0 },
+                    frequency: '15-days', balance: 450, avgRating: 0, totalRatings: 0 },
+                { id: 'c3', name: 'Amit Singh', phone: '919876543212', address: 'House No 12, Main St', locality: 'Shivaji Colony',
+                    area: 'Sanath Nagar', mapsLink: 'https://maps.google.com', plan: { milk: 3, curd: 2, ghee: 1 },
+                    frequency: 'monthly', balance: 0, avgRating: 0, totalRatings: 0 },
+            ];
+            state.customers = INITIAL_CUSTOMERS;
+            state.deliveries = generateHistoricalData(INITIAL_CUSTOMERS);
+            state.holidays = [];
+            state.noDeliveryRequests = [];
+            state.notifications = [];
+            state.ratings = [];
+            fallbackSave();
+        }
+
+        function generateHistoricalData(customers) {
+            let data = [];
+            const now = new Date();
+            for (let i = 400; i >= 0; i--) {
+                const dateObj = new Date(now);
+                dateObj.setDate(now.getDate() - i);
+                const dStr = getLocalDateString(dateObj);
+                customers.forEach(c => {
+                    const status = Math.random() > 0.1 ? 'delivered' : 'skipped';
+                    const items = {
+                        milk: c.plan.milk,
+                        curd: (Math.random() > 0.5 ? c.plan.curd : 0),
+                        ghee: (Math.random() > 0.95 ? 1 : 0)
+                    };
+                    const rating = status === 'delivered' && Math.random() > 0.6 ? Math.floor(Math.random() * 5) + 1 :
+                        null;
+                    data.push({
+                        id: `seed_${dStr}_${c.id}`,
+                        customerId: c.id,
+                        date: dStr,
+                        status: status,
+                        items: items,
+                        rating: rating,
+                        ratingComment: rating ? 'Good quality' : null
+                    });
+                });
+            }
+            return data;
+        }
+
+        // ============================================================
+        // 7.  ANALYTICS ENGINE (Admin)
+        // ============================================================
+        function calculateRevenue(deliveriesArray) {
+            return deliveriesArray
+                .filter(d => d.status === 'delivered')
+                .reduce((sum, d) => sum + (d.items.milk * PRICES.milk) + (d.items.curd * PRICES.curd) + (d.items.ghee *
+                    PRICES.ghee), 0);
+        }
+
+        function getAdminAnalytics() {
+            const now = new Date();
+            const getDel = (daysAgoStart, daysAgoEnd) => {
+                return state.deliveries.filter(d => {
+                    const dDate = new Date(d.date);
+                    const start = new Date(now);
+                    start.setDate(now.getDate() - daysAgoStart);
+                    const end = new Date(now);
+                    end.setDate(now.getDate() - daysAgoEnd);
+                    return dDate >= start && dDate <= end;
+                });
+            };
+
+            const revToday = calculateRevenue(getDel(0, 0));
+            const revYesterday = calculateRevenue(getDel(1, 1));
+            const dod = revYesterday ? ((revToday - revYesterday) / revYesterday) * 100 : 0;
+
+            const revThisWeek = calculateRevenue(getDel(6, 0));
+            const revLastWeek = calculateRevenue(getDel(13, 7));
+            const wow = revLastWeek ? ((revThisWeek - revLastWeek) / revLastWeek) * 100 : 0;
+
+            const revThisMonth = calculateRevenue(getDel(29, 0));
+            const revLastMonth = calculateRevenue(getDel(59, 30));
+            const mom = revLastMonth ? ((revThisMonth - revLastMonth) / revLastMonth) * 100 : 0;
+
+            const revThisYear = calculateRevenue(getDel(364, 0));
+            const revLastYear = calculateRevenue(getDel(729, 365));
+            const yoy = revLastYear ? ((revThisYear - revLastYear) / revLastYear) * 100 : 0;
+
+            const ratedDels = state.deliveries.filter(d => d.rating !== null && d.rating !== undefined);
+            const avgRating = ratedDels.length ? (ratedDels.reduce((s, d) => s + d.rating, 0) / ratedDels.length) : 0;
+            const ratingDist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+            ratedDels.forEach(d => { if (d.rating >= 1 && d.rating <= 5) ratingDist[d.rating]++; });
+
+            return {
+                today: revToday,
+                dod: { val: revToday - revYesterday, pct: dod.toFixed(1) },
+                wow: { val: revThisWeek, prev: revLastWeek, pct: wow.toFixed(1) },
+                mom: { val: revThisMonth, prev: revLastMonth, pct: mom.toFixed(1) },
+                yoy: { val: revThisYear, prev: revLastYear, pct: yoy.toFixed(1) },
+                avgRating: avgRating,
+                ratingDist: ratingDist,
+                totalRated: ratedDels.length,
+            };
+        }
+
+        // ============================================================
+        // 8.  NOTIFICATION ENGINE
+        // ============================================================
+        function addNotification(customerId, type, message, data = {}) {
+            state.notifications.push({
+                id: generateId(),
+                customerId: customerId,
+                type: type,
+                message: message,
+                data: data,
+                read: false,
+                createdAt: new Date().toISOString()
+            });
+        }
+
+        function getUnreadCount(customerId = null) {
+            if (customerId) {
+                return state.notifications.filter(n => n.customerId === customerId && !n.read).length;
+            }
+            return state.notifications.filter(n => !n.read).length;
+        }
+
+        function markNotificationRead(id) {
+            const idx = state.notifications.findIndex(n => n.id === id);
+            if (idx >= 0) { state.notifications[idx].read = true;
+                saveData(); }
+        }
+
+        // ============================================================
+        // 9.  RENDER ENGINE
+        // ============================================================
+        let revenueChartInstance = null;
+
+        function renderApp() {
+            const app = document.getElementById('app');
+            let html = '';
+
+            if (state.view === 'login') html = renderLogin();
+            else if (state.view === 'dashboard') html = renderDashboard();
+
+            app.innerHTML = html;
+            lucide.createIcons();
+
+            setTimeout(() => {
+                if (state.view === 'dashboard' && state.adminTab === 'analytics') renderAdminChart();
+            }, 50);
+        }
+
+        const syncIcon = () => state.isSyncing ?
+            `<div class="spinner"></div>` :
+            `<i data-lucide="cloud" class="w-4 h-4 text-blue-200"></i>`;
+
+        // ============================================================
+        // 10. LOGIN (Admin)
+        // ============================================================
+        function renderLogin() {
+            return `
+            <div class="min-h-screen flex flex-col items-center justify-center p-4 fade-in bg-gradient-to-br from-blue-50 to-indigo-50">
+                <div class="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden">
+                    <div class="bg-blue-600 p-8 text-center relative">
+                        <div class="w-20 h-20 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg transform -translate-y-2">
+                            <i data-lucide="trending-up" class="text-blue-600 w-10 h-10"></i>
+                        </div>
+                        <h1 class="text-3xl font-black text-white tracking-tight">MilkSync</h1>
+                        <p class="text-blue-100 mt-1 font-medium">Fresh Dairy • Smart Delivery</p>
+                    </div>
+                    <div class="p-6 space-y-5">
+                        <div>
+                            <h2 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Admin Sign In</h2>
+                            <form onsubmit="handleAdminLogin(event)" class="space-y-3">
+                                <div class="relative">
+                                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                        <span class="text-gray-400 font-bold text-sm">+91</span>
+                                    </div>
+                                    <input type="tel" id="loginPhone" placeholder="Enter admin phone number" required
+                                        class="w-full pl-14 pr-4 py-3.5 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" />
+                                </div>
+                                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg transition-all active:scale-95 flex justify-center items-center gap-2">
+                                    <i data-lucide="log-in" class="w-5 h-5"></i> Continue
+                                </button>
+                            </form>
+                            <p class="text-center text-xs text-gray-400 mt-3">🔑 Enter the admin phone number (${ADMIN_PHONE})</p>
+                        </div>
+                        <div class="border-t pt-4">
+                            <p class="text-xs text-gray-400 text-center">${BUSINESS_NAME} • ${BUSINESS_TAGLINE}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        window.handleAdminLogin = async (e) => {
+            e.preventDefault();
+            const phone = document.getElementById('loginPhone').value.trim();
+            if (!phone) return;
+
+            if (phone === ADMIN_PHONE) {
+                state.view = 'dashboard';
+                renderApp();
+            } else {
+                alert('Invalid admin phone number.');
+            }
+        };
+
+        window.logout = () => {
+            state.view = 'login';
+            state.settingsMode = null;
+            state.settingsCustomerId = null;
+            renderApp();
+        };
+
+        // ============================================================
+        // 11. ADMIN DASHBOARD
+        // ============================================================
+        function renderDashboard() {
+            let content = '';
+            if (state.adminTab === 'daily') content = renderDaily();
+            else if (state.adminTab === 'customers') content = renderCustomers();
+            else if (state.adminTab === 'analytics') content = renderAnalytics();
+            else if (state.adminTab === 'requests') content = renderRequests();
+
+            const unreadCount = getUnreadCount('admin');
+
+            return `
+            <div class="min-h-screen pb-20 fade-in bg-gray-50">
+                <div class="bg-blue-600 text-white p-4 shadow-md sticky top-0 z-10 flex justify-between items-center">
+                    <div>
+                        <h1 class="text-xl font-bold tracking-tight">Admin Portal</h1>
+                        <p class="text-xs text-blue-200">${new Date().toDateString()}</p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        ${unreadCount > 0 ? `<span class="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">${unreadCount}</span>` : ''}
+                        ${syncIcon()}
+                        <button onclick="logout()" class="p-2 bg-blue-700 rounded-full active:scale-95"><i data-lucide="log-out" class="w-4 h-4"></i></button>
+                    </div>
+                </div>
+                <div class="p-4">${content}</div>
+
+                <!-- Bottom Nav -->
+                <div class="fixed bottom-0 w-full bg-white border-t flex justify-around p-2 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)] pb-safe z-50">
+                    <button onclick="setAdminTab('daily')" class="flex flex-col items-center p-2 min-w-[64px] ${state.adminTab === 'daily' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.adminTab === 'daily' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="check-circle" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Today</span>
+                    </button>
+                    <button onclick="setAdminTab('customers')" class="flex flex-col items-center p-2 min-w-[64px] ${state.adminTab === 'customers' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.adminTab === 'customers' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="users" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Clients</span>
+                    </button>
+                    <button onclick="setAdminTab('analytics')" class="flex flex-col items-center p-2 min-w-[64px] ${state.adminTab === 'analytics' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.adminTab === 'analytics' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="bar-chart-2" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Analytics</span>
+                    </button>
+                    <button onclick="setAdminTab('requests')" class="flex flex-col items-center p-2 min-w-[64px] ${state.adminTab === 'requests' ? 'text-blue-600' : 'text-gray-400'}">
+                        <div class="${state.adminTab === 'requests' ? 'bg-blue-50' : ''} p-1.5 rounded-xl"><i data-lucide="inbox" class="w-6 h-6"></i></div>
+                        <span class="text-[10px] font-bold mt-1">Requests</span>
+                    </button>
+                </div>
+            </div>`;
+        }
+
+        window.setAdminTab = (tab) => {
+            state.adminTab = tab;
+            renderApp();
+        };
+
+        // ---- DAILY ----
+        function renderDaily() {
+            const todayDel = state.deliveries.filter(d => d.date === todayStr);
+            const doneCount = todayDel.filter(d => d.status === 'delivered').length;
+
+            const isHoliday = state.holidays.some(h => h.date === todayStr);
+            if (isHoliday) {
+                return `
+                    <div class="bg-yellow-50 border border-yellow-200 rounded-2xl p-6 text-center mb-4">
+                        <i data-lucide="calendar-off" class="w-10 h-10 text-yellow-600 mx-auto mb-2"></i>
+                        <h2 class="text-xl font-extrabold text-yellow-800">📅 Holiday Today</h2>
+                        <p class="text-yellow-700">${state.holidays.find(h => h.date === todayStr)?.reason || 'No deliveries today.'}</p>
+                        <button onclick="setAdminTab('customers')" class="mt-3 text-sm bg-yellow-100 px-4 py-2 rounded-lg font-bold text-yellow-800">Manage Holidays</button>
+                    </div>
+                `;
+            }
+
+            const areas = [...new Set(state.customers.map(c => c.area))];
+
+            const list = state.customers.map(c => {
+                const dRecord = todayDel.find(d => d.customerId === c.id);
+                const status = dRecord ? dRecord.status : 'pending';
+
+                const ndr = state.noDeliveryRequests.find(r => r.customerId === c.id && r.date === todayStr && r.status ===
+                    'approved');
+                const isPausedByCustomer = !!ndr;
+
+                let btns = '';
+                if (isPausedByCustomer || status === 'customer_skipped') {
+                    btns =
+                        `<div class="w-full text-center py-2.5 bg-red-50 text-red-600 rounded-xl font-bold text-sm border border-red-100">${isPausedByCustomer ? '🙅 Customer Paused' : 'Customer Paused Today'}</div>`;
+                } else {
+                    btns = `
+                        <button onclick="updateDelivery('${c.id}','delivered')" class="flex-1 py-2.5 rounded-xl font-bold text-sm transition-all active:scale-95 ${status === 'delivered' ? 'bg-[#25D366] text-white shadow' : 'bg-gray-100 text-gray-600'}">Delivered</button>
+                        <button onclick="updateDelivery('${c.id}','skipped')" class="flex-1 py-2.5 rounded-xl font-bold text-sm transition-all active:scale-95 ${status === 'skipped' ? 'bg-orange-500 text-white shadow' : 'bg-gray-100 text-gray-600'}">Skip</button>
+                    `;
+                }
+
+                return `
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 mb-3">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <div class="flex items-center gap-2 mb-1">
+                                <h3 class="font-bold text-gray-900">${c.name}</h3>
+                                <span class="badge-area">${c.locality}</span>
+                                <span class="badge-area bg-green-50 text-green-700">${c.area}</span>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-2 truncate max-w-[200px]">${c.address}</p>
+                            <div class="flex gap-2 text-[11px] font-bold text-gray-600 flex-wrap">
+                                ${c.plan.milk ? `<span class="bg-blue-50 text-blue-700 px-2 py-1 rounded-md">🥛 ${c.plan.milk}</span>` : ''}
+                                ${c.plan.curd ? `<span class="bg-yellow-50 text-yellow-700 px-2 py-1 rounded-md">🥣 ${c.plan.curd}</span>` : ''}
+                                ${c.plan.ghee ? `<span class="bg-orange-50 text-orange-700 px-2 py-1 rounded-md">🧈 ${c.plan.ghee}</span>` : ''}
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <a href="tel:${c.phone}" class="p-2.5 bg-green-50 text-green-600 rounded-full shadow-sm"><i data-lucide="phone" class="w-4 h-4"></i></a>
+                            <a href="${c.mapsLink}" target="_blank" class="p-2.5 bg-blue-50 text-blue-600 rounded-full shadow-sm"><i data-lucide="map-pin" class="w-4 h-4"></i></a>
+                        </div>
+                    </div>
+                    <div class="flex gap-2 mt-1">${btns}</div>
+                </div>`;
+            }).join('');
+
+            return `
+                <div class="flex justify-between items-center mb-5">
+                    <h2 class="text-xl font-extrabold text-gray-800 tracking-tight">Run Sheet</h2>
+                    <div class="flex items-center gap-3">
+                        <span class="bg-blue-100 text-blue-800 text-xs font-extrabold px-3 py-1.5 rounded-full shadow-inner">${doneCount} / ${state.customers.length} Done</span>
+                    </div>
+                </div>
+                <div class="flex gap-2 mb-4 overflow-x-auto no-scrollbar pb-2">
+                    ${areas.map(a => `<span class="badge-area text-xs px-3 py-1.5 bg-gray-100 text-gray-700">${a}</span>`).join('')}
+                </div>
+                ${list}
+            `;
+        }
+
+        // ---- CUSTOMERS ----
+        function renderCustomers() {
+            const areaGroups = {};
+            state.customers.forEach(c => {
+                if (!areaGroups[c.area]) areaGroups[c.area] = [];
+                areaGroups[c.area].push(c);
+            });
+
+            return `
+                <div class="flex justify-between items-center mb-5">
+                    <h2 class="text-xl font-extrabold text-gray-800 tracking-tight">Client Hub</h2>
+                    <button onclick="openSettings('new')" class="flex items-center gap-1 text-sm bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold shadow-sm active:scale-95"><i data-lucide="plus" class="w-4 h-4"></i> Add</button>
+                </div>
+
+                ${state.holidays.length > 0 ? `
+                    <div class="bg-yellow-50 border border-yellow-200 rounded-2xl p-3 mb-4 flex justify-between items-center">
+                        <div>
+                            <span class="text-xs font-bold text-yellow-800">📅 ${state.holidays.length} upcoming holiday(s)</span>
+                            <button onclick="openSettings('holidays')" class="text-xs text-yellow-700 underline ml-2">Manage</button>
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${Object.entries(areaGroups).map(([area, customers]) => `
+                    <div class="mb-4">
+                        <div class="flex items-center gap-2 mb-2">
+                            <h3 class="font-extrabold text-gray-700 text-sm">📍 ${area}</h3>
+                            <span class="bg-gray-100 text-gray-600 text-[10px] font-bold px-2 py-0.5 rounded-full">${customers.length}</span>
+                        </div>
+                        ${customers.map(c => `
+                            <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 mb-3">
+                                <div class="flex justify-between items-start mb-4">
+                                    <div>
+                                        <h3 class="font-bold text-gray-900 text-lg">${c.name}</h3>
+                                        <div class="flex gap-1 text-[10px] font-bold text-gray-500">
+                                            <span class="badge-area">${c.locality}</span>
+                                            <span class="badge-area bg-green-50 text-green-700">${c.area}</span>
+                                        </div>
+                                        <p class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mt-1">${c.frequency}</p>
+                                        <p class="text-sm font-medium">Balance: <span class="font-extrabold text-red-500">${formatCurrency(c.balance)}</span></p>
+                                        <p class="text-xs text-gray-500">⭐ ${c.avgRating ? c.avgRating.toFixed(1) : 'N/A'} (${c.totalRatings || 0} ratings)</p>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button onclick="openSettings('edit','${c.id}')" class="p-2 bg-gray-100 text-gray-700 rounded-lg active:scale-95 hover:bg-gray-200 transition-all" title="Settings">
+                                            <i data-lucide="settings" class="w-5 h-5"></i>
+                                        </button>
+                                        <button onclick="logPayment('${c.id}')" class="text-xs bg-green-50 text-green-700 px-3 py-1.5 rounded-lg font-extrabold border border-green-200 active:scale-95 shadow-sm">
+                                            Log Pay
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button onclick="sendBill('${c.id}')" class="flex-1 flex justify-center items-center gap-2 bg-[#25D366] text-white py-2.5 rounded-xl text-sm font-bold shadow-sm active:scale-95">
+                                        <i data-lucide="message-circle" class="w-4 h-4"></i> WhatsApp Bill
+                                    </button>
+                                    <button onclick="openSettings('no-delivery','${c.id}')" class="flex-1 flex justify-center items-center gap-2 bg-red-50 text-red-700 py-2.5 rounded-xl text-sm font-bold border border-red-200 active:scale-95">
+                                        <i data-lucide="calendar-x" class="w-4 h-4"></i> No-Delivery
+                                    </button>
+                                </div>
+                                ${state.noDeliveryRequests.filter(r => r.customerId === c.id && r.status === 'approved').map(r => `
+                                    <div class="mt-2 text-xs bg-red-50 text-red-600 px-3 py-1.5 rounded-lg border border-red-100">
+                                        🚫 No delivery on ${formatDate(r.date)} — ${r.reason || 'Customer request'}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `).join('')}
+                    </div>
+                `).join('')}
+            `;
+        }
+
+        // ---- ANALYTICS ----
+        function renderAnalytics() {
+            const a = getAdminAnalytics();
+
+            const badge = (pct) => {
+                const n = parseFloat(pct);
+                if (n > 0) return `<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-[10px] font-bold">↑ ${pct}%</span>`;
+                if (n < 0) return `<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded text-[10px] font-bold">↓ ${Math.abs(n)}%</span>`;
+                return `<span class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px] font-bold">- 0%</span>`;
+            };
+
+            const ratingBars = Object.entries(a.ratingDist).map(([star, count]) => {
+                const pct = a.totalRated ? (count / a.totalRated) * 100 : 0;
+                return `
+                    <div class="flex items-center gap-2 text-xs">
+                        <span class="w-6 font-bold text-gray-600">${star}⭐</span>
+                        <div class="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div class="h-full bg-yellow-400 rounded-full" style="width:${pct}%"></div>
+                        </div>
+                        <span class="w-8 text-right font-bold text-gray-600">${count}</span>
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <h2 class="text-xl font-extrabold text-gray-800 tracking-tight mb-5">Growth & Insights</h2>
+
+                <div class="grid grid-cols-2 gap-3 mb-6">
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm relative overflow-hidden">
+                        <div class="absolute -right-4 -top-4 w-16 h-16 bg-blue-50 rounded-full opacity-50"></div>
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">Today (DoD)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.today)}</p>
+                        ${badge(a.dod.pct)}
+                    </div>
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">This Wk (WoW)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.wow.val)}</p>
+                        ${badge(a.wow.pct)}
+                    </div>
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">This Mo (MoM)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.mom.val)}</p>
+                        ${badge(a.mom.pct)}
+                    </div>
+                    <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">This Yr (YoY)</p>
+                        <p class="text-2xl font-black text-gray-900 mb-1">${formatCurrency(a.yoy.val)}</p>
+                        ${badge(a.yoy.pct)}
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 mb-6">
+                    <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">⭐ Rating Insights</h3>
+                    <div class="flex items-center gap-4 mb-3">
+                        <div class="text-4xl font-black text-yellow-500">${a.avgRating ? a.avgRating.toFixed(1) : 'N/A'}</div>
+                        <div class="text-sm text-gray-500">${a.totalRated} ratings</div>
+                    </div>
+                    <div class="space-y-1.5">${ratingBars}</div>
+                </div>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 mb-6">
+                    <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4">30-Day Revenue Trend</h3>
+                    <div class="w-full h-48"><canvas id="adminRevenueChart"></canvas></div>
+                </div>
+            `;
+        }
+
+        function renderAdminChart() {
+            const ctx = document.getElementById('adminRevenueChart');
+            if (!ctx) return;
+            if (revenueChartInstance) { revenueChartInstance.destroy();
+                revenueChartInstance = null; }
+
+            const labels = [];
+            const data = [];
+            const now = new Date();
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date(now);
+                d.setDate(d.getDate() - i);
+                labels.push(`${d.getDate()}/${d.getMonth()+1}`);
+                const dStr = getLocalDateString(d);
+                const dayDel = state.deliveries.filter(del => del.date === dStr && del.status === 'delivered');
+                data.push(calculateRevenue(dayDel));
+            }
+
+            revenueChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Revenue (₹)',
+                        data,
+                        borderColor: '#2563eb',
+                        backgroundColor: 'rgba(37,99,235,0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHitRadius: 20
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+                        y: { border: { display: false }, ticks: { font: { size: 10 }, callback: v => '₹' + v } }
+                    }
+                }
+            });
+        }
+
+        // ---- REQUESTS ----
+        function renderRequests() {
+            const pending = state.noDeliveryRequests.filter(r => r.status === 'pending');
+            const approved = state.noDeliveryRequests.filter(r => r.status === 'approved');
+            const rejected = state.noDeliveryRequests.filter(r => r.status === 'rejected');
+
+            return `
+                <h2 class="text-xl font-extrabold text-gray-800 tracking-tight mb-5">Requests & Notifications</h2>
+
+                ${state.notifications.filter(n => n.customerId === 'admin' && !n.read).length > 0 ? `
+                    <div class="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-4">
+                        <h3 class="font-bold text-blue-800 text-sm mb-2">📨 Unread Admin Notifications</h3>
+                        ${state.notifications.filter(n => n.customerId === 'admin' && !n.read).slice(0,5).map(n => `
+                            <div class="bg-white p-3 rounded-xl mb-2 flex justify-between items-start">
+                                <div>
+                                    <p class="text-sm font-medium text-gray-800">${n.message}</p>
+                                    <p class="text-[10px] text-gray-400">${new Date(n.createdAt).toLocaleString()}</p>
+                                </div>
+                                <button onclick="markNotificationRead('${n.id}')" class="text-xs bg-blue-200 px-3 py-1 rounded-lg font-bold">Mark read</button>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+
+                <div class="space-y-4">
+                    <div>
+                        <h3 class="font-extrabold text-gray-800 text-sm mb-3 flex items-center gap-2">
+                            <span class="bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded text-[10px] font-bold">${pending.length}</span>
+                            Pending No-Delivery Requests
+                        </h3>
+                        ${pending.length === 0 ? '<p class="text-gray-400 text-sm">No pending requests.</p>' : ''}
+                        ${pending.map(r => {
+                            const c = state.customers.find(x => x.id === r.customerId);
+                            return `
+                                <div class="bg-white p-4 rounded-2xl shadow-sm border border-yellow-200 mb-3">
+                                    <div class="flex justify-between items-start">
+                                        <div>
+                                            <p class="font-bold text-gray-900">${c?.name || 'Unknown'} — ${formatDate(r.date)}</p>
+                                            <p class="text-sm text-gray-600">${r.reason || 'No reason provided'}</p>
+                                            <p class="text-[10px] text-gray-400">Requested ${new Date(r.createdAt).toLocaleString()}</p>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button onclick="approveNoDelivery('${r.id}')" class="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold active:scale-95">Approve</button>
+                                            <button onclick="rejectNoDelivery('${r.id}')" class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold active:scale-95">Reject</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+
+                    <div>
+                        <h3 class="font-extrabold text-gray-800 text-sm mb-3 flex items-center gap-2">
+                            <span class="bg-green-100 text-green-800 px-2 py-0.5 rounded text-[10px] font-bold">${approved.length}</span>
+                            Approved No-Delivery
+                        </h3>
+                        ${approved.slice(0,5).map(r => {
+                            const c = state.customers.find(x => x.id === r.customerId);
+                            return `
+                                <div class="bg-white p-3 rounded-xl shadow-sm border border-gray-100 mb-2 flex justify-between">
+                                    <span class="text-sm">${c?.name || 'Unknown'} — ${formatDate(r.date)}</span>
+                                    <span class="text-xs font-bold text-green-600">Approved</span>
+                                </div>
+                            `;
+                        }).join('')}
+                        ${approved.length === 0 ? '<p class="text-gray-400 text-sm">No approved requests.</p>' : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        // ---- Request actions ----
+        window.approveNoDelivery = async (id) => {
+            const r = state.noDeliveryRequests.find(x => x.id === id);
+            if (!r) return;
+            r.status = 'approved';
+            const c = state.customers.find(x => x.id === r.customerId);
+            if (c) {
+                addNotification(c.id, 'request', `✅ Your no-delivery request for ${formatDate(r.date)} has been approved.`);
+            }
+            await saveData();
+            renderApp();
+        };
+
+        window.rejectNoDelivery = async (id) => {
+            const r = state.noDeliveryRequests.find(x => x.id === id);
+            if (!r) return;
+            r.status = 'rejected';
+            const c = state.customers.find(x => x.id === r.customerId);
+            if (c) {
+                addNotification(c.id, 'request', `❌ Your no-delivery request for ${formatDate(r.date)} was not approved.`);
+            }
+            await saveData();
+            renderApp();
+        };
+
+        // ---- Delivery update with rating notification ----
+        window.updateDelivery = async (custId, status) => {
+            const cust = state.customers.find(c => c.id === custId);
+            const idx = state.deliveries.findIndex(d => d.date === todayStr && d.customerId === custId);
+
+            const record = {
+                id: idx >= 0 ? state.deliveries[idx].id : `d_${Date.now()}`,
+                customerId: custId,
+                date: todayStr,
+                status: status,
+                items: cust.plan,
+                rating: null,
+                ratingComment: null
+            };
+
+            if (idx >= 0) state.deliveries[idx] = record;
+            else state.deliveries.push(record);
+
+            if (status === 'delivered') {
+                addNotification(custId, 'rating',
+                    `📦 Your milk delivery for today has been completed. Please rate your experience!`,
+                    { deliveryId: record.id }
+                );
+            }
+
+            await saveData();
+        };
+
+        // ---- Payment & WhatsApp ----
+        window.logPayment = async (custId) => {
+            const cust = state.customers.find(c => c.id === custId);
+            const amt = prompt(`Log payment received from ${cust.name}. Current Balance: ${formatCurrency(cust.balance)}\nEnter Amount:`);
+            if (amt && !isNaN(amt)) {
+                const payAmt = parseFloat(amt);
+                cust.balance = Math.max(0, cust.balance - payAmt);
+                addNotification(cust.id, 'payment', `Payment of ${formatCurrency(payAmt)} received. New balance: ${formatCurrency(cust.balance)}`);
+                await saveData();
+                alert(`✅ ${formatCurrency(payAmt)} deducted. New Balance: ${formatCurrency(cust.balance)}`);
+            }
+        };
+
+        window.sendBill = (custId) => {
+            const cust = state.customers.find(c => c.id === custId);
+            const text = `Hi ${cust.name}, your outstanding milk bill is ${formatCurrency(cust.balance)}. Please clear it at the earliest. Thank you!`;
+            window.open(`https://wa.me/${cust.phone}?text=${encodeURIComponent(text)}`, '_blank');
+        };
+
+        // ============================================================
+        // 12. SETTINGS OVERLAY
+        // ============================================================
+        function renderSettingsOverlay() {
+            const mode = state.settingsMode;
+            if (!mode) return '';
+
+            let title = '',
+                body = '';
+
+            if (mode === 'edit' || mode === 'new') {
+                const custId = state.settingsCustomerId || null;
+                const c = custId ? state.customers.find(x => x.id === custId) : null;
+                const isNew = mode === 'new';
+                title = isNew ? 'Add Customer' : `Edit ${c?.name || 'Customer'}`;
+                body = `
+                    <form id="settingsForm" onsubmit="saveCustomerSettings(event)" class="space-y-4">
+                        <input type="hidden" name="id" value="${c?.id || ''}" />
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Name</label>
+                            <input name="name" value="${c?.name || ''}" required class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Phone</label>
+                            <input name="phone" value="${c?.phone || ''}" required class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Locality</label>
+                            <input name="locality" value="${c?.locality || ''}" placeholder="e.g. Shivaji Colony" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Area</label>
+                            <input name="area" value="${c?.area || ''}" placeholder="e.g. Sanath Nagar" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Address</label>
+                            <input name="address" value="${c?.address || ''}" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Maps Link</label>
+                            <input name="mapsLink" value="${c?.mapsLink || 'https://maps.google.com'}" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div class="grid grid-cols-3 gap-2">
+                            <div>
+                                <label class="text-xs font-bold text-gray-500 uppercase">Milk (pkts)</label>
+                                <input name="plan_milk" type="number" min="0" value="${c?.plan?.milk || 0}" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-500 uppercase">Curd (pkts)</label>
+                                <input name="plan_curd" type="number" min="0" value="${c?.plan?.curd || 0}" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-500 uppercase">Ghee (jars)</label>
+                                <input name="plan_ghee" type="number" min="0" value="${c?.plan?.ghee || 0}" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Frequency</label>
+                            <select name="frequency" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500">
+                                ${['monthly','15-days','weekly'].map(f => `<option value="${f}" ${c?.frequency === f ? 'selected' : ''}>${f}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase">Balance (₹)</label>
+                            <input name="balance" type="number" min="0" value="${c?.balance || 0}" class="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div class="flex gap-3 mt-4">
+                            <button type="submit" class="flex-1 bg-blue-600 text-white font-bold py-2.5 rounded-xl">${isNew ? 'Add Customer' : 'Save Changes'}</button>
+                            <button type="button" onclick="closeSettings()" class="flex-1 bg-gray-200 text-gray-700 font-bold py-2.5 rounded-xl">Cancel</button>
+                        </div>
+                        ${!isNew ? `<button type="button" onclick="deleteCustomer('${c?.id}')" class="w-full text-red-600 font-bold py-2 text-sm hover:bg-red-50 rounded-xl">🗑 Delete Customer</button>` : ''}
+                    </form>
+                `;
+            } else if (mode === 'holidays') {
+                title = 'Manage Holidays';
+                const holidayList = state.holidays.map(h =>
+                    `<div class="flex justify-between items-center bg-gray-50 p-3 rounded-xl mb-2">
+                        <span>${formatDate(h.date)} — ${h.reason}</span>
+                        <button onclick="deleteHoliday('${h.date}')" class="text-red-500 p-1 hover:bg-red-50 rounded-full"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    </div>`
+                ).join('');
+
+                body = `
+                    <form onsubmit="addHoliday(event)" class="flex gap-2 mb-4">
+                        <input type="date" id="holidayDate" required class="flex-1 p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        <input type="text" id="holidayReason" placeholder="Reason" required class="flex-1 p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        <button type="submit" class="bg-blue-600 text-white font-bold px-4 py-2.5 rounded-xl">Add</button>
+                    </form>
+                    <div class="max-h-[300px] overflow-y-auto">${holidayList || '<p class="text-gray-400 text-sm">No holidays set.</p>'}</div>
+                    <button onclick="closeSettings()" class="w-full mt-4 bg-gray-200 text-gray-700 font-bold py-2.5 rounded-xl">Done</button>
+                `;
+            } else if (mode === 'no-delivery') {
+                const custId = state.settingsCustomerId;
+                const c = state.customers.find(x => x.id === custId);
+                title = `No-Delivery — ${c?.name || 'Customer'}`;
+
+                const requests = state.noDeliveryRequests
+                    .filter(r => r.customerId === custId)
+                    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+                const reqList = requests.map(r =>
+                    `<div class="flex justify-between items-center bg-gray-50 p-3 rounded-xl mb-2 ${r.status === 'approved' ? 'border-l-4 border-red-500' : 'border-l-4 border-yellow-400'}">
+                        <div>
+                            <span class="font-bold text-sm">${formatDate(r.date)}</span>
+                            <span class="text-xs text-gray-500 ml-2">${r.reason || 'No reason'}</span>
+                            <span class="text-[10px] font-bold uppercase ml-2 ${r.status === 'approved' ? 'text-red-600' : 'text-yellow-600'}">${r.status}</span>
+                        </div>
+                        <button onclick="deleteNoDelivery('${r.id}')" class="text-red-500 p-1 hover:bg-red-50 rounded-full"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    </div>`
+                ).join('');
+
+                body = `
+                    <form onsubmit="addNoDelivery(event)" class="flex gap-2 mb-4">
+                        <input type="date" id="ndDate" required class="flex-1 p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        <input type="text" id="ndReason" placeholder="Reason (e.g. out of town)" class="flex-1 p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500" />
+                        <button type="submit" class="bg-red-600 text-white font-bold px-4 py-2.5 rounded-xl">Add</button>
+                    </form>
+                    <div class="max-h-[300px] overflow-y-auto">${reqList || '<p class="text-gray-400 text-sm">No delivery requests for this customer.</p>'}</div>
+                    <button onclick="closeSettings()" class="w-full mt-4 bg-gray-200 text-gray-700 font-bold py-2.5 rounded-xl">Done</button>
+                `;
+            }
+
+            return `
+                <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm fade-in">
+                    <div class="w-full max-w-md bg-white rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto p-5">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-extrabold text-gray-900">${title}</h2>
+                            <button onclick="closeSettings()" class="p-2 rounded-full hover:bg-gray-100"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                        ${body}
+                    </div>
+                </div>
+            `;
+        }
+
+        // ---- Settings handlers ----
+        window.openSettings = (mode, custId = null) => {
+            state.settingsMode = mode;
+            state.settingsCustomerId = custId || null;
+            renderApp();
+            const app = document.getElementById('app');
+            const overlay = renderSettingsOverlay();
+            if (overlay) {
+                app.insertAdjacentHTML('beforeend', overlay);
+                lucide.createIcons();
+            }
+        };
+
+        window.closeSettings = () => {
+            state.settingsMode = null;
+            state.settingsCustomerId = null;
+            renderApp();
+        };
+
+        window.saveCustomerSettings = async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const fd = new FormData(form);
+            const id = fd.get('id') || generateId();
+            const isNew = !fd.get('id');
+
+            const data = {
+                id: id,
+                name: fd.get('name'),
+                phone: fd.get('phone'),
+                locality: fd.get('locality') || 'Unknown',
+                area: fd.get('area') || 'Unknown',
+                address: fd.get('address') || '',
+                mapsLink: fd.get('mapsLink') || 'https://maps.google.com',
+                plan: {
+                    milk: parseInt(fd.get('plan_milk')) || 0,
+                    curd: parseInt(fd.get('plan_curd')) || 0,
+                    ghee: parseInt(fd.get('plan_ghee')) || 0
+                },
+                frequency: fd.get('frequency') || 'monthly',
+                balance: parseInt(fd.get('balance')) || 0,
+                avgRating: 0,
+                totalRatings: 0
+            };
+
+            if (isNew) {
+                state.customers.push(data);
+            } else {
+                const idx = state.customers.findIndex(c => c.id === id);
+                if (idx >= 0) {
+                    data.avgRating = state.customers[idx].avgRating || 0;
+                    data.totalRatings = state.customers[idx].totalRatings || 0;
+                    state.customers[idx] = data;
+                }
+            }
+
+            await saveData();
+            closeSettings();
+        };
+
+        window.deleteCustomer = async (id) => {
+            if (!confirm('Delete this customer permanently?')) return;
+            state.customers = state.customers.filter(c => c.id !== id);
+            state.deliveries = state.deliveries.filter(d => d.customerId !== id);
+            state.noDeliveryRequests = state.noDeliveryRequests.filter(r => r.customerId !== id);
+            await saveData();
+            closeSettings();
+        };
+
+        window.addHoliday = async (e) => {
+            e.preventDefault();
+            const date = document.getElementById('holidayDate').value;
+            const reason = document.getElementById('holidayReason').value.trim();
+            if (!date || !reason) return;
+            if (state.holidays.some(h => h.date === date)) {
+                alert('Holiday already exists for this date.');
+                return;
+            }
+            state.holidays.push({ date, reason });
+            await saveData();
+            document.getElementById('holidayDate').value = '';
+            document.getElementById('holidayReason').value = '';
+            closeSettings();
+            openSettings('holidays');
+        };
+
+        window.deleteHoliday = async (date) => {
+            if (!confirm('Remove this holiday?')) return;
+            state.holidays = state.holidays.filter(h => h.date !== date);
+            await saveData();
+            closeSettings();
+            openSettings('holidays');
+        };
+
+        window.addNoDelivery = async (e) => {
+            e.preventDefault();
+            const date = document.getElementById('ndDate').value;
+            const reason = document.getElementById('ndReason').value.trim() || 'Customer request';
+            const custId = state.settingsCustomerId;
+            if (!date || !custId) return;
+            if (state.noDeliveryRequests.some(r => r.customerId === custId && r.date === date && r.status === 'approved')) {
+                alert('Already have an approved no-delivery request for this date.');
+                return;
+            }
+            state.noDeliveryRequests.push({
+                id: generateId(),
+                customerId: custId,
+                date,
+                reason,
+                status: 'pending',
+                createdAt: new Date().toISOString()
+            });
+            const c = state.customers.find(x => x.id === custId);
+            if (c) {
+                addNotification('admin', 'request',
+                    `📩 ${c.name} requested no delivery on ${formatDate(date)}. Reason: ${reason}`
+                );
+            }
+            await saveData();
+            document.getElementById('ndDate').value = '';
+            document.getElementById('ndReason').value = '';
+            closeSettings();
+            openSettings('no-delivery', custId);
+        };
+
+        window.deleteNoDelivery = async (id) => {
+            if (!confirm('Remove this no-delivery request?')) return;
+            state.noDeliveryRequests = state.noDeliveryRequests.filter(r => r.id !== id);
+            await saveData();
+            closeSettings();
+            openSettings('no-delivery', state.settingsCustomerId);
+        };
+
+        // ============================================================
+        // 13. INITIALIZATION
+        // ============================================================
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initData();
+            renderApp();
+        });
+    </script>
+</body>
+</html>
